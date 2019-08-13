@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+
+import pyinotify
+import os
+from collections import defaultdict
+import re
+import logging
+import datetime
+import sys
+
+
+monitorDir = '/tmp/tomcat-logs'
+errorCheckerLogFile="/tmp/errchecker-log.txt"
+
+# auxiliary class
+class TomcatLogsUtils(object):
+    @classmethod
+    def isServerStartCompleted(cls, line):
+        pattern = re.compile("INFO.+Server startup in")
+
+        return pattern.search(line)
+
+    @classmethod
+    def isServerContainsError(cls, line):
+        return "ERROR" in line or "Exception" in line
+
+
+    @classmethod
+    def isServerStarting(cls, line):
+        return "Using CATALINA_BASE" in line
+
+
+# class that handle events when something changes inside the monitored directory
+class EventHandler(pyinotify.ProcessEvent):
+
+    def processUpdateToFile(self, pathname):
+        last_file_offset = last_known_position[pathname]
+        try:
+            fo = open(pathname, "r")
+            fo.seek(last_file_offset)
+            new_lines_in_logs = fo.readlines()
+            for line in new_lines_in_logs:
+                # if the server has completed the startup
+                if TomcatLogsUtils.isServerStartCompleted(line):
+                    logging.info("Server startup finished")
+                    f = open(errorCheckerLogFile, "a+")
+                    currentDT = datetime.datetime.now()
+                    f.write("{} TOMCAT SERVER STARTED log file={} errors={}".format(str(currentDT), pathname, error_counter[pathname]))
+                    f.write("\n")
+                    f.close()
+                    error_counter[pathname] = 0
+                elif TomcatLogsUtils.isServerContainsError(line):
+                    logging.debug("Error dertected:{}".format(line))
+                    f = open(errorCheckerLogFile, "a+")
+                    f.write(line)
+                    f.close()
+                    error_counter[pathname] += 1
+                # it wasn't specified clearly in the exercise
+                # but if we are interested in errors during startup
+                # we should be able to detect exactly the server startup
+                # and also reset the
+                elif TomcatLogsUtils.isServerStarting(line):
+                    logging.info("Server startup start")
+                    error_counter[pathname] = 0
+
+            updated_position = fo.tell()
+            fo.close()
+            logging.debug("Updated Position {}".format(updated_position))
+            last_known_position[pathname] = updated_position
+
+        except:
+            logging.error("Unexpected error. Probably invalid ascii file")
+
+
+    # Handles log rotation
+    def process_IN_MOVED_TO(self, event):
+        logging.info("process_IN_MOVED_TO: {}".format(event))
+        srcPath = event.src_pathname
+        dstPath = event.pathname
+        if srcPath in last_known_position:
+            last_known_position[dstPath] =  last_known_position[srcPath]
+            del  last_known_position[srcPath]
+
+        if srcPath in error_counter:
+            error_counter[dstPath] = error_counter[srcPath]
+            del error_counter[srcPath]
+
+
+    def process_IN_CREATE(self, event):
+        logging.info("Creating:", event.pathname)
+        last_known_position[event.pathname]=0
+        self.processUpdateToFile(event.pathname)
+
+
+    def process_IN_DELETE(self, event):
+        logging.info("Removing from watch list:", event.pathname)
+        if event.pathname in last_known_position:
+            del last_known_position[event.pathname]
+        if event.pathname in error_counter:
+            del error_counter[event.pathname]
+
+    def process_IN_MODIFY(self, event):
+        logging.info("process_IN_MODIFY:", event.pathname)
+
+        self.processUpdateToFile(event.pathname)
+
+
+# setup monitoring of events that we are interested on
+handler = EventHandler()
+wm = pyinotify.WatchManager()  # Watch Manager
+mask = pyinotify.IN_DELETE | pyinotify.IN_CREATE  | pyinotify.IN_MODIFY | pyinotify.IN_MOVED_TO # watched events
+last_known_position = {}
+error_counter = defaultdict(int)
+
+
+
+try:
+    files = [os.path.join(monitorDir,f) for f in os.listdir(monitorDir) if os.path.isfile(os.path.join(monitorDir,f))]
+    # iterate through all the files in the directory and save all sizes
+    # we want to listen for changes but we don't want to print log files
+    # for all the logs that are already in the directory
+    for f in files:
+        logging.info("Processing file {}".format(f))
+        last_known_position[f] = os.path.getsize(f)
+        logging.info("Last known position for file name {} is {}".format(f,  last_known_position[f]))
+except FileNotFoundError:
+    os.mkdir(monitorDir)
+
+
+notifier = pyinotify.Notifier(wm, handler)
+wdd = wm.add_watch(monitorDir, mask, rec=True)
+
+notifier.loop()

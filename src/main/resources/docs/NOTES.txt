@@ -1,0 +1,10 @@
+Tomcat Error Checking Notes
+
+1. My understanding is that we only want the errors count during the startup. However any errors that happen during the server run are still logged
+to the /tmp/errchecker-log.txt file. We detect the server start by using the string "Using CATALINA_BASE". This wasn't specified in the exercise
+description, but I think it makes sense.
+2. I haven't gone aboard with regular expressions and limited myself to the ones requested in the assignment. In real life there will be probably be
+other scenarios happening in the logs, that might not necessarily follow the pattern ERROR and Exception.
+3. I used the library pyinotify. Please install with pip3 install pyinotify. This library helps a lot in the work of detecting new files or modifications
+to existing files
+4.
